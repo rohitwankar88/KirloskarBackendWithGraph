@@ -40,6 +40,90 @@ OUTPUT_LABELS = [
 app = Flask(__name__)
 CORS(app)
 
+@app.route('/plot_economizer', methods=['POST'])
+def plot_economizer():
+    try:
+        data = request.json
+
+        # Extract required values from /process output
+        refrigerant = data.get("Refrigerant")
+        h1 = data.get("h1")
+        h2 = data.get("h2")
+        h3 = data.get("h3")
+        Ps_bar = data.get("Suction Pressure (bar abs)")
+        Pd_bar = data.get("Discharge Pressure (bar abs)")
+
+        if None in [refrigerant, h1, h2, h3, Ps_bar, Pd_bar]:
+            return jsonify({"error": "Missing required fields. Please pass full /process output."})
+
+        # Convert bar to Pa
+        P1 = Ps_bar * 1e5
+        P2 = Pd_bar * 1e5
+        P3 = P2
+        P4 = P1
+        h4 = h3
+
+        # Economizer state point (assume mid-pressure)
+        Pecon = np.sqrt(P1 * P2)
+        h_econ_inj = CP.PropsSI("H", "P", Pecon, "Q", 1, refrigerant)
+
+        # Cycle data including economizer injection
+        h_cycle = [h1, h2, h3, h4, h1]
+        p_cycle = [P1, P2, P3, P4, P1]
+
+        # Saturation curve
+        p_vals = np.logspace(np.log10(P1 * 0.5), np.log10(P2 * 1.5), 300)
+        hL = [CP.PropsSI("H", "P", p, "Q", 0, refrigerant) for p in p_vals]
+        hV = [CP.PropsSI("H", "P", p, "Q", 1, refrigerant) for p in p_vals]
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(hL, np.array(p_vals)/1e5, 'b-', label='Saturated Liquid')
+        ax.plot(hV, np.array(p_vals)/1e5, 'r-', label='Saturated Vapor')
+        ax.plot(h_cycle, np.array(p_cycle)/1e5, 'ko-', linewidth=2, label='Refrigeration Cycle')
+
+        # Economizer point
+        ax.plot(h_econ_inj, Pecon/1e5, 'gs', markersize=8, label='Economizer Injection')
+
+        # Labels
+        labels = ["1", "2", "3", "4"]
+        for i, (h, p) in enumerate(zip(h_cycle[:-1], p_cycle[:-1])):
+            ax.annotate(f"{labels[i]}\n{h/1000:.1f} kJ/kg", (h, p/1e5), xytext=(0, 10),
+                        textcoords='offset points', ha='center', fontsize=9,
+                        bbox=dict(facecolor='white', alpha=0.6))
+
+        ax.annotate(f"Econ Inj\n{h_econ_inj/1000:.1f} kJ/kg", 
+                    (h_econ_inj, Pecon/1e5), xytext=(-40, -20),
+                    textcoords='offset points', ha='center', fontsize=9,
+                    bbox=dict(facecolor='white', alpha=0.6))
+
+        ax.set_xlabel("Enthalpy (J/kg)")
+        ax.set_ylabel("Pressure (bar abs)")
+        ax.set_yscale("log")
+        ax.set_title(f"P-h Diagram with Economizer for {refrigerant}")
+        ax.legend()
+        ax.grid(True, which="both", ls="--", lw=0.5)
+
+        # Encode image
+        img = io.BytesIO()
+        plt.savefig(img, format='png', dpi=300)
+        img.seek(0)
+        img_base64 = base64.b64encode(img.getvalue()).decode()
+        plt.close(fig)
+
+        # Economizer result
+        result = {
+            "Economizer Pressure (bar abs)": round(Pecon/1e5, 2),
+            "Economizer Enthalpy (kJ/kg)": round(h_econ_inj/1000, 2),
+            "ph_diagram_economizer": img_base64
+        }
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route('/process', methods=['POST'])
 def process_data():
     try:
