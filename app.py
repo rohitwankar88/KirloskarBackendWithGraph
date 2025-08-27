@@ -123,6 +123,109 @@ def plot_economizer():
     except Exception as e:
         return jsonify({"error": str(e)})
 
+@app.route('/ph-diagram-economizer', methods=['POST'])
+def ph_diagram_economizer():
+    try:
+        # Get JSON data from frontend
+        data = request.get_json()
+        compressor_data = data.get("compressor_data")
+        eco_results = data.get("eco_results")
+        cop = eco_results.get("COP_eco", None)
+
+        refrigerant = compressor_data["Refrigerant"]
+
+        # Extract cycle points
+        h1 = compressor_data["Point 1"]["Enthalpy (J/kg)"]
+        P1 = compressor_data["Point 1"]["Suction Pressure (bar abs)"] * 1e5
+        h2 = compressor_data["Point 2"]["Enthalpy (J/kg)"]
+        P2 = compressor_data["Point 2"]["Discharge Pressure (bar abs)"] * 1e5
+        h3 = compressor_data["Point 3"]["Enthalpy (J/kg)"]
+        P3 = compressor_data["Point 3"]["Condensing Pressure (bar abs)"] * 1e5
+        h4 = h3
+        P4 = P1
+
+        # Economizer injection point
+        Peco = eco_results["Peco"]
+        h7 = eco_results["h7"]
+
+        # Base cycle
+        h_base = [h1, h2, h3, h4, h1]
+        P_base = [P1, P2, P3, P4, P1]
+
+        # Cycle with economizer
+        h_eco = [h1, h7, h2, h3, h4, h1]
+        P_eco = [P1, Peco, P2, P3, P4, P1]
+
+        # Saturation envelope
+        p_vals = np.logspace(np.log10(P1 * 0.5), np.log10(P2 * 1.5), 300)
+        hL = [PropsSI("H", "P", p, "Q", 0, refrigerant) for p in p_vals]
+        hV = [PropsSI("H", "P", p, "Q", 1, refrigerant) for p in p_vals]
+
+        # === Create Figure ===
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot saturation lines
+        ax.plot(hL, np.array(p_vals)/1e5, 'b-', label='Saturated Liquid')
+        ax.plot(hV, np.array(p_vals)/1e5, 'r-', label='Saturated Vapor')
+
+        # Plot base cycle
+        ax.plot(h_base, np.array(P_base)/1e5, 'k--o', label="Base Cycle")
+
+        # Plot economizer cycle
+        ax.plot(h_eco, np.array(P_eco)/1e5, 'g-s', label="With Economizer")
+
+        # Annotate points on economizer cycle
+        labels_eco = ["1", "7 (Eco)", "2", "3", "4", "1"]
+        for i, (h, p, lbl) in zip(range(len(h_eco)), zip(h_eco, P_eco, labels_eco)):
+            if i < len(h_eco) - 1:
+                ax.annotate(
+                    f"{lbl}\n{h/1000:.1f} kJ/kg",
+                    (h, p/1e5),
+                    xytext=(0, 10),
+                    textcoords='offset points',
+                    ha='center',
+                    fontsize=9,
+                    bbox=dict(facecolor='white', alpha=0.6)
+                )
+
+        # Annotate COP
+        if cop:
+            center_h = np.mean(h_eco)
+            center_p = np.mean(P_eco)
+            ax.text(center_h, center_p / 1e5, f"COP = {cop:.2f}", fontsize=12,
+                    color='darkgreen', ha='center', bbox=dict(facecolor='white', alpha=0.7))
+
+        # Final plot settings
+        ax.set_xlabel("Enthalpy (J/kg)")
+        ax.set_ylabel("Pressure (bar abs)")
+        ax.set_title(f"P-h Diagram with Economizer Injection ({refrigerant})")
+        ax.set_yscale("log")
+        ax.grid(True, which="both", ls="--", lw=0.5)
+        ax.legend()
+        fig.tight_layout()
+
+        # === Save plot to buffer ===
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=500, bbox_inches="tight")
+        buffer.seek(0)
+
+        # Convert image to Base64
+        img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        buffer.close()
+
+        plt.close(fig)
+
+        return jsonify({
+            "status": "success",
+            "message": "P-h diagram generated successfully",
+            "ph_diagram_base64": img_base64
+        })
+
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        })
 
 @app.route('/process', methods=['POST'])
 def process_data():
